@@ -1,0 +1,377 @@
+<html>
+<head>
+<title>chatbot_gui.py</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #cc7832;}
+.s1 { color: #a9b7c6;}
+.s2 { color: #808080;}
+.s3 { color: #629755; font-style: italic;}
+.s4 { color: #6897bb;}
+.s5 { color: #6a8759;}
+</style>
+</head>
+<body bgcolor="#2b2b2b">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+chatbot_gui.py</font>
+</center></td></tr></table>
+<pre><span class="s0">import </span><span class="s1">wx</span>
+<span class="s0">from </span><span class="s1">wx.adv </span><span class="s0">import </span><span class="s1">Animation</span><span class="s0">, </span><span class="s1">AnimationCtrl</span>
+<span class="s0">from </span><span class="s1">typing </span><span class="s0">import </span><span class="s1">Callable</span>
+<span class="s0">from </span><span class="s1">threading </span><span class="s0">import </span><span class="s1">RLock</span>
+<span class="s0">from </span><span class="s1">concurrent.futures </span><span class="s0">import </span><span class="s1">ThreadPoolExecutor</span>
+<span class="s0">import </span><span class="s1">time</span>
+<span class="s0">import </span><span class="s1">pyttsx3</span>
+
+<span class="s2"># define event id for sending a command to GUI from a thread</span>
+<span class="s1">ID_COMMAND = wx.NewId()</span>
+
+
+<span class="s2"># define result event</span>
+<span class="s0">def </span><span class="s1">evt_command(win</span><span class="s0">, </span><span class="s1">func):</span>
+    <span class="s3">&quot;&quot;&quot;Define Result Event.&quot;&quot;&quot;</span>
+    <span class="s1">win.Connect(-</span><span class="s4">1</span><span class="s0">, </span><span class="s1">-</span><span class="s4">1</span><span class="s0">, </span><span class="s1">ID_COMMAND</span><span class="s0">, </span><span class="s1">func)</span>
+
+
+<span class="s2"># result event class</span>
+<span class="s0">class </span><span class="s1">CommandEvent(wx.PyEvent):</span>
+    <span class="s3">&quot;&quot;&quot;Simple event to carry arbitrary result data.&quot;&quot;&quot;</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">task: str</span><span class="s0">, </span><span class="s1">data: str):</span>
+        <span class="s3">&quot;&quot;&quot;Init Result Event.&quot;&quot;&quot;</span>
+        <span class="s1">wx.PyEvent.__init__(self)</span>
+        <span class="s1">self.SetEventType(ID_COMMAND)</span>
+
+        <span class="s2"># the task to perform and the data needed for the task</span>
+        <span class="s1">self.task = task</span>
+        <span class="s1">self.data = data</span>
+
+
+<span class="s2"># main wx frame object</span>
+<span class="s0">class </span><span class="s1">Main(wx.Frame):</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">parent</span><span class="s0">, </span><span class="s1">title: str</span><span class="s0">, </span><span class="s1">gui: </span><span class="s5">'ChatbotGUI'</span><span class="s0">, </span><span class="s1">gif_path: str</span><span class="s0">, </span><span class="s1">show_timestamp: bool = </span><span class="s0">False</span><span class="s1">):</span>
+        <span class="s2"># init parent</span>
+        <span class="s1">wx.Frame.__init__(self</span><span class="s0">, </span><span class="s1">parent</span><span class="s0">, </span><span class="s1">-</span><span class="s4">1</span><span class="s0">, </span><span class="s1">title=title)</span>
+
+        <span class="s2"># a reference to the chatbot GUI</span>
+        <span class="s1">self.gui = gui</span>
+
+        <span class="s2"># keeps track of the show_timestamp</span>
+        <span class="s1">self.show_timestamp = show_timestamp</span>
+
+        <span class="s2"># grid for splitting the screen into two parts, the gif and I/O elements</span>
+        <span class="s1">self.grid = wx.BoxSizer(wx.HORIZONTAL)</span>
+
+        <span class="s2"># user &amp; AI message history</span>
+        <span class="s1">self.user_message_history = []</span>
+        <span class="s1">self.ai_message_history = []</span>
+
+        <span class="s2"># panel for all of the I/O elements</span>
+        <span class="s1">self.io_panel = wx.Panel(self)</span>
+
+        <span class="s2"># the sizer for the panel I/O elements</span>
+        <span class="s1">self.io_sizer = wx.BoxSizer(wx.VERTICAL)</span>
+
+        <span class="s2"># chat bot animation asset</span>
+        <span class="s1">self.chatbot_gif = Animation(gif_path)</span>
+
+        <span class="s2"># animation controller for the chat bot gif</span>
+        <span class="s1">self.chatbot_control = AnimationCtrl(self</span><span class="s0">, </span><span class="s1">-</span><span class="s4">1</span><span class="s0">, </span><span class="s1">self.chatbot_gif)</span>
+
+        <span class="s2">#</span>
+        <span class="s2"># I/O elements</span>
+        <span class="s2">#</span>
+        
+        <span class="s2"># input chat label</span>
+        <span class="s1">self.input_chat_top_label = wx.StaticText(self.io_panel</span><span class="s0">, </span><span class="s1">label=</span><span class="s5">&quot;Your History:&quot;</span><span class="s1">)</span>
+
+        <span class="s2"># Your chat history </span>
+        <span class="s1">self.input_chat = wx.TextCtrl(self.io_panel</span><span class="s0">, </span><span class="s1">size=wx.Size(</span><span class="s4">400</span><span class="s0">, </span><span class="s4">290</span><span class="s1">)</span><span class="s0">, </span><span class="s1">style=wx.TE_READONLY | wx.TE_MULTILINE)</span>
+
+        <span class="s2"># input chat label</span>
+        <span class="s1">self.input_chat_label = wx.StaticText(self.io_panel</span><span class="s0">, </span><span class="s1">label=</span><span class="s5">&quot;Talk to AI:&quot;</span><span class="s1">)</span>
+
+        <span class="s2"># input chat text box</span>
+        <span class="s1">self.input_box = wx.TextCtrl(self.io_panel</span><span class="s0">, </span><span class="s1">style=wx.TE_PROCESS_ENTER</span><span class="s0">, </span><span class="s1">size=wx.Size(</span><span class="s4">400</span><span class="s0">, </span><span class="s4">20</span><span class="s1">))</span>
+
+        <span class="s2"># input chat enter button</span>
+        <span class="s1">self.chat_button = wx.Button(self.io_panel</span><span class="s0">, </span><span class="s1">label=</span><span class="s5">&quot;Send your Text to AI Bot&quot;</span><span class="s1">)</span>
+
+        <span class="s2"># input chat label</span>
+        <span class="s1">self.output_chat_label = wx.StaticText(self.io_panel</span><span class="s0">, </span><span class="s1">label=</span><span class="s5">&quot;AI Response History:&quot;</span><span class="s1">)</span>
+
+        <span class="s2"># AI chat History</span>
+        <span class="s1">self.output_chat = wx.TextCtrl(self.io_panel</span><span class="s0">, </span><span class="s1">size=wx.Size(</span><span class="s4">400</span><span class="s0">, </span><span class="s4">290</span><span class="s1">)</span><span class="s0">, </span><span class="s1">style=wx.TE_READONLY | wx.TE_MULTILINE)</span>
+
+        <span class="s2"># ai status label</span>
+        <span class="s1">self.ai_status_label = wx.StaticText(self.io_panel</span><span class="s0">, </span><span class="s1">label=</span><span class="s5">&quot;Current AI Status:&quot;</span><span class="s1">)</span>
+
+        <span class="s2"># ai status box</span>
+        <span class="s1">self.status_box = wx.TextCtrl(self.io_panel</span><span class="s0">, </span><span class="s1">style=wx.TE_READONLY)</span>
+
+        <span class="s2">#</span>
+        <span class="s2">#   Add and size elements</span>
+        <span class="s2">#</span>
+
+        <span class="s2"># add elements to the I/O sizer</span>
+        <span class="s1">self.io_sizer.Add(self.input_chat_top_label</span><span class="s0">, </span><span class="s4">0</span><span class="s0">, </span><span class="s1">wx.EXPAND | wx.LEFT | wx.TOP</span><span class="s0">, </span><span class="s4">5</span><span class="s1">)</span>
+        <span class="s1">self.io_sizer.Add(self.input_chat</span><span class="s0">, </span><span class="s4">0</span><span class="s0">, </span><span class="s1">wx.EXPAND | wx.ALL</span><span class="s0">, </span><span class="s4">5</span><span class="s1">)</span>
+        <span class="s1">self.io_sizer.Add(self.input_chat_label</span><span class="s0">, </span><span class="s4">0</span><span class="s0">, </span><span class="s1">wx.EXPAND | wx.LEFT | wx.TOP</span><span class="s0">, </span><span class="s4">5</span><span class="s1">)</span>
+        <span class="s1">self.io_sizer.Add(self.input_box</span><span class="s0">, </span><span class="s4">0</span><span class="s0">, </span><span class="s1">wx.EXPAND | wx.ALL</span><span class="s0">, </span><span class="s4">5</span><span class="s1">)</span>
+        <span class="s1">self.io_sizer.Add(self.chat_button</span><span class="s0">, </span><span class="s4">0</span><span class="s0">, </span><span class="s1">wx.EXPAND | wx.ALL</span><span class="s0">, </span><span class="s4">5</span><span class="s1">)</span>
+        <span class="s1">self.io_sizer.Add(self.output_chat_label</span><span class="s0">, </span><span class="s4">0</span><span class="s0">, </span><span class="s1">wx.EXPAND | wx.LEFT | wx.TOP</span><span class="s0">, </span><span class="s4">5</span><span class="s1">)</span>
+        <span class="s1">self.io_sizer.Add(self.output_chat</span><span class="s0">, </span><span class="s4">0</span><span class="s0">, </span><span class="s1">wx.EXPAND | wx.ALL</span><span class="s0">, </span><span class="s4">5</span><span class="s1">)</span>
+        <span class="s1">self.io_sizer.Add(self.ai_status_label</span><span class="s0">, </span><span class="s4">0</span><span class="s0">, </span><span class="s1">wx.EXPAND | wx.LEFT | wx.TOP</span><span class="s0">, </span><span class="s4">5</span><span class="s1">)</span>
+        <span class="s1">self.io_sizer.Add(self.status_box</span><span class="s0">, </span><span class="s4">0</span><span class="s0">, </span><span class="s1">wx.EXPAND | wx.ALL</span><span class="s0">, </span><span class="s4">5</span><span class="s1">)</span>
+
+        <span class="s2"># add elements to the main grid sizer</span>
+        <span class="s1">self.grid.Add(self.io_panel</span><span class="s0">, </span><span class="s4">0</span><span class="s0">, </span><span class="s1">wx.EXPAND | wx.ALL)</span>
+        <span class="s1">self.grid.Add(self.chatbot_control)</span>
+
+        <span class="s2"># size and fit the sizers</span>
+        <span class="s1">self.io_panel.SetSizerAndFit(self.io_sizer)</span>
+        <span class="s1">self.SetSizerAndFit(self.grid)</span>
+
+        <span class="s2">#</span>
+        <span class="s2">#   Bind buttons to functions</span>
+        <span class="s2">#</span>
+        <span class="s1">self.Bind(wx.EVT_TEXT_ENTER</span><span class="s0">, </span><span class="s1">self.on_send_press)</span>
+        <span class="s1">self.Bind(wx.EVT_BUTTON</span><span class="s0">, </span><span class="s1">self.on_send_press</span><span class="s0">, </span><span class="s1">self.chat_button)</span>
+
+        <span class="s2"># bind the event handler for commands</span>
+        <span class="s1">evt_command(self</span><span class="s0">, </span><span class="s1">self.on_command)</span>
+
+    <span class="s2"># function for handling command events</span>
+    <span class="s0">def </span><span class="s1">on_command(self</span><span class="s0">, </span><span class="s1">event: CommandEvent):</span>
+        <span class="s2"># process send command</span>
+        <span class="s0">if </span><span class="s1">event.task == </span><span class="s5">&quot;send&quot;</span><span class="s1">:</span>
+            <span class="s2"># send ai message to chat</span>
+            <span class="s1">self.send_ai_message(event.data)</span>
+        <span class="s2"># process gif commands</span>
+        <span class="s0">if </span><span class="s1">event.task == </span><span class="s5">&quot;gif&quot;</span><span class="s1">:</span>
+            <span class="s2"># start gif and set status to speaking</span>
+            <span class="s0">if </span><span class="s1">event.data == </span><span class="s5">&quot;start&quot;</span><span class="s1">:</span>
+                <span class="s1">self.status_box.SetValue(</span><span class="s5">&quot;Speaking...&quot;</span><span class="s1">)</span>
+                <span class="s1">self.start_animation()</span>
+            <span class="s2"># stop gif and set status to waiting</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">self.status_box.SetValue(</span><span class="s5">&quot;Waiting...&quot;</span><span class="s1">)</span>
+                <span class="s1">self.stop_animation()</span>
+        <span class="s2"># process thinking commands</span>
+        <span class="s0">if </span><span class="s1">event.task == </span><span class="s5">&quot;thinking&quot;</span><span class="s1">:</span>
+            <span class="s2"># set status to thinking</span>
+            <span class="s0">if </span><span class="s1">event.data == </span><span class="s5">&quot;start&quot;</span><span class="s1">:</span>
+                <span class="s1">self.status_box.SetValue(</span><span class="s5">&quot;Thinking...&quot;</span><span class="s1">)</span>
+            <span class="s2"># set status to waiting</span>
+            <span class="s0">else</span><span class="s1">:</span>
+                <span class="s1">self.stop_animation(</span><span class="s5">&quot;Waiting...&quot;</span><span class="s1">)</span>
+
+    <span class="s0">def </span><span class="s1">start_animation(self</span><span class="s0">, </span><span class="s1">event=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">self.chatbot_control.Play()</span>
+
+    <span class="s0">def </span><span class="s1">stop_animation(self</span><span class="s0">, </span><span class="s1">event=</span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s1">self.chatbot_control.Stop()</span>
+
+    <span class="s2"># updates the user and AI message histories</span>
+    <span class="s0">def </span><span class="s1">update_message_history(self):</span>
+        <span class="s2"># variables to store the aggregated text</span>
+        <span class="s1">user_text = </span><span class="s5">&quot;&quot;</span>
+        <span class="s1">ai_text = </span><span class="s5">&quot;&quot;</span>
+
+        <span class="s2"># aggregate user messages</span>
+        <span class="s0">for </span><span class="s1">message </span><span class="s0">in </span><span class="s1">self.user_message_history:</span>
+            <span class="s1">user_text += message + </span><span class="s5">&quot;</span><span class="s0">\n</span><span class="s5">&quot;</span>
+
+        <span class="s2"># aggregate ai messages</span>
+        <span class="s0">for </span><span class="s1">message </span><span class="s0">in </span><span class="s1">self.ai_message_history:</span>
+            <span class="s1">ai_text += str(message) + </span><span class="s5">&quot;</span><span class="s0">\n</span><span class="s5">&quot;</span>
+
+        <span class="s2"># update the chats</span>
+        <span class="s1">self.input_chat.SetValue(user_text)</span>
+        <span class="s1">self.output_chat.SetValue(ai_text)</span>
+
+    <span class="s2"># send a ai message</span>
+    <span class="s0">def </span><span class="s1">send_ai_message(self</span><span class="s0">, </span><span class="s1">text: str):</span>
+        <span class="s2"># add the message to message history</span>
+        <span class="s1">self.ai_message_history.insert(</span><span class="s4">0</span><span class="s0">, </span><span class="s1">self.get_timestamp() + </span><span class="s5">&quot;AI&gt; &quot; </span><span class="s1">+ str(text))</span>
+
+        <span class="s2"># update the message history</span>
+        <span class="s1">self.update_message_history()</span>
+
+    <span class="s2"># clears the user and AI chat history</span>
+    <span class="s0">def </span><span class="s1">clear_chat(self):</span>
+        <span class="s1">self.user_message_history = []</span>
+        <span class="s1">self.ai_message_history = []</span>
+        <span class="s1">self.update_message_history()        </span>
+        
+    <span class="s2"># closes program</span>
+    <span class="s0">def </span><span class="s1">exit_bot(self):</span>
+        <span class="s1">self.Close()</span>
+
+    <span class="s2"># function handling &quot;send&quot; button press</span>
+    <span class="s0">def </span><span class="s1">on_send_press(self</span><span class="s0">, </span><span class="s1">event):</span>
+        <span class="s2"># read the text box</span>
+        <span class="s1">text = self.input_box.GetValue()</span>
+        <span class="s0">if </span><span class="s1">text == </span><span class="s5">&quot;&quot;</span><span class="s1">:</span>
+            <span class="s0">return</span>
+
+        <span class="s2"># clear the text box</span>
+        <span class="s1">self.input_box.SetValue(</span><span class="s5">&quot;&quot;</span><span class="s1">)</span>
+
+        <span class="s2"># add the message to message history</span>
+        <span class="s1">self.user_message_history.insert(</span><span class="s4">0</span><span class="s0">, </span><span class="s1">self.get_timestamp() + </span><span class="s5">&quot;You&gt; &quot; </span><span class="s1">+ text)</span>
+
+        <span class="s2"># update the message history</span>
+        <span class="s1">self.update_message_history()</span>
+
+        <span class="s2"># call the message handler function for the ChatBot GUI</span>
+        <span class="s1">self.gui.call_on_message(text)</span>
+
+    <span class="s2"># returns time stamp</span>
+    <span class="s0">def </span><span class="s1">get_timestamp(self) -&gt; str:</span>
+        <span class="s0">if </span><span class="s1">self.show_timestamp:</span>
+            <span class="s0">return </span><span class="s5">&quot;[&quot; </span><span class="s1">+ time.strftime(</span><span class="s5">&quot;%H:%M:%S&quot;</span><span class="s0">, </span><span class="s1">time.localtime()) + </span><span class="s5">&quot;] &quot;</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s0">return </span><span class="s5">&quot;&quot;</span>
+
+
+<span class="s2"># main program class, controls the GUI and interactions with the GUI</span>
+<span class="s0">class </span><span class="s1">ChatbotGUI:</span>
+    <span class="s0">def </span><span class="s1">__init__(self</span><span class="s0">, </span><span class="s1">title: str</span><span class="s0">, </span><span class="s1">gif_path: str</span><span class="s0">, </span><span class="s1">show_timestamps: bool = </span><span class="s0">True, </span><span class="s1">default_voice_options: dict = </span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2"># app object</span>
+        <span class="s1">self.app = wx.App()</span>
+
+        <span class="s2"># main frame</span>
+        <span class="s1">self.frame = Main(</span><span class="s0">None, </span><span class="s1">title</span><span class="s0">, </span><span class="s1">self</span><span class="s0">, </span><span class="s1">gif_path</span><span class="s0">, </span><span class="s1">show_timestamps)</span>
+
+        <span class="s2"># mutex to prevent out - of - order responses</span>
+        <span class="s1">self.__thinking = RLock()</span>
+
+        <span class="s2"># mutex to prevent ai from talking over itself</span>
+        <span class="s1">self.__talking = RLock()</span>
+
+        <span class="s2"># thread pool for executing speech and processing threads</span>
+        <span class="s1">self.__pool = ThreadPoolExecutor(max_workers=</span><span class="s4">8</span><span class="s1">)</span>
+
+        <span class="s2"># set default_voice_options to the default if no defaults are provided</span>
+        <span class="s0">if </span><span class="s1">default_voice_options </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">self.default_voice_options = {</span>
+                <span class="s5">&quot;rate&quot;</span><span class="s1">: </span><span class="s4">100</span><span class="s0">,</span>
+                <span class="s5">&quot;volume&quot;</span><span class="s1">: </span><span class="s4">0.8</span><span class="s0">,</span>
+                <span class="s5">&quot;voice&quot;</span><span class="s1">: </span><span class="s5">&quot;HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\TTS_MS_EN-US_ZIRA_11.0&quot;</span>
+            <span class="s1">}</span>
+        <span class="s0">else</span><span class="s1">:</span>
+            <span class="s1">self.default_voice_options = {</span>
+                <span class="s5">&quot;rate&quot;</span><span class="s1">: default_voice_options.get(</span><span class="s5">&quot;rate&quot;</span><span class="s0">, </span><span class="s4">100</span><span class="s1">)</span><span class="s0">,</span>
+                <span class="s5">&quot;volume&quot;</span><span class="s1">: default_voice_options.get(</span><span class="s5">&quot;rate&quot;</span><span class="s0">, </span><span class="s4">0.8</span><span class="s1">)</span><span class="s0">,</span>
+                <span class="s5">&quot;voice&quot;</span><span class="s1">: default_voice_options.get(</span>
+                    <span class="s5">&quot;id&quot;</span><span class="s0">,</span>
+                    <span class="s5">&quot;HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\TTS_MS_EN-US_ZIRA_11.0&quot;</span>
+                <span class="s1">)</span>
+            <span class="s1">}</span>
+
+    <span class="s2"># clear's chat history</span>
+    <span class="s0">def </span><span class="s1">clear(self):</span>
+        <span class="s1">self.frame.clear_chat()</span>
+        
+    <span class="s2"># exits application</span>
+    <span class="s0">def </span><span class="s1">exit(self):</span>
+        <span class="s1">self.frame.exit_bot()</span>
+
+    <span class="s2"># starts gif</span>
+    <span class="s0">def </span><span class="s1">start_gif(self):</span>
+        <span class="s1">self.frame.start_animation(</span><span class="s0">None</span><span class="s1">)</span>
+
+    <span class="s2"># starts gif</span>
+    <span class="s0">def </span><span class="s1">stop_gif(self):</span>
+        <span class="s1">self.frame.stop_animation(</span><span class="s0">None</span><span class="s1">)</span>
+
+    <span class="s2"># function for sending the chatbot message processing to a thread</span>
+    <span class="s0">def </span><span class="s1">process_and_send_ai_message(self</span><span class="s0">, </span><span class="s1">ai_response_generator: Callable[[str]</span><span class="s0">, </span><span class="s1">str]</span><span class="s0">, </span><span class="s1">text: str</span><span class="s0">,</span>
+                                    <span class="s1">callback: Callable[[]</span><span class="s0">, None</span><span class="s1">] = </span><span class="s0">None, </span><span class="s1">voice_options: dict = </span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2"># submit the process to the thread pool</span>
+        <span class="s1">self.__pool.submit(self.__process_and_send</span><span class="s0">, </span><span class="s1">ai_response_generator</span><span class="s0">, </span><span class="s1">text</span><span class="s0">, </span><span class="s1">callback</span><span class="s0">, </span><span class="s1">voice_options)</span>
+
+    <span class="s2"># thread function used to process the</span>
+    <span class="s0">def </span><span class="s1">__process_and_send(self</span><span class="s0">, </span><span class="s1">ai_response_generator: Callable[[str]</span><span class="s0">, </span><span class="s1">str]</span><span class="s0">, </span><span class="s1">text: str</span><span class="s0">,</span>
+                           <span class="s1">callback: Callable[[]</span><span class="s0">, None</span><span class="s1">] = </span><span class="s0">None, </span><span class="s1">voice_options: dict = </span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2"># block other processing threads until this one is finished</span>
+        <span class="s0">with </span><span class="s1">self.__thinking:</span>
+            <span class="s2"># put up thinking indicator</span>
+            <span class="s1">wx.PostEvent(self.frame</span><span class="s0">, </span><span class="s1">CommandEvent(</span><span class="s5">&quot;thinking&quot;</span><span class="s0">, </span><span class="s5">&quot;start&quot;</span><span class="s1">))</span>
+
+            <span class="s2"># generate the ai response</span>
+            <span class="s1">response = ai_response_generator(text)</span>
+
+            <span class="s2"># remove thinking indicator</span>
+            <span class="s1">wx.PostEvent(self.frame</span><span class="s0">, </span><span class="s1">CommandEvent(</span><span class="s5">&quot;thinking&quot;</span><span class="s0">, </span><span class="s5">&quot;stop&quot;</span><span class="s1">))</span>
+
+            <span class="s2"># send the ai message</span>
+            <span class="s1">self.send_ai_message(response</span><span class="s0">, </span><span class="s1">callback</span><span class="s0">, </span><span class="s1">voice_options)</span>
+
+    <span class="s2"># function for submitting messages</span>
+    <span class="s0">def </span><span class="s1">send_ai_message(self</span><span class="s0">, </span><span class="s1">text: str</span><span class="s0">, </span><span class="s1">callback: Callable[[]</span><span class="s0">, None</span><span class="s1">] = </span><span class="s0">None, </span><span class="s1">voice_options: dict = </span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2"># submit the function to the thread pool</span>
+        <span class="s1">self.__pool.submit(self.__send_ai_message</span><span class="s0">, </span><span class="s1">text</span><span class="s0">, </span><span class="s1">callback</span><span class="s0">, </span><span class="s1">voice_options)</span>
+
+    <span class="s2"># thread function used to submit ai messages</span>
+    <span class="s0">def </span><span class="s1">__send_ai_message(self</span><span class="s0">, </span><span class="s1">text: str</span><span class="s0">, </span><span class="s1">callback: Callable[[]</span><span class="s0">, None</span><span class="s1">] = </span><span class="s0">None, </span><span class="s1">voice_options: dict = </span><span class="s0">None</span><span class="s1">):</span>
+        <span class="s2"># if no speech options are provided then set defaults</span>
+        <span class="s0">if </span><span class="s1">voice_options </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">voice_options = self.default_voice_options</span>
+
+        <span class="s2"># acquire permission to perform text to speech</span>
+        <span class="s0">with </span><span class="s1">self.__talking:</span>
+            <span class="s2"># Code based on https://www.geeksforgeeks.org/text-to-speech-changing-voice-in-python/</span>
+
+            <span class="s2"># send the message in chat via command event</span>
+            <span class="s1">wx.PostEvent(self.frame</span><span class="s0">, </span><span class="s1">CommandEvent(</span><span class="s5">&quot;send&quot;</span><span class="s0">, </span><span class="s1">text))</span>
+
+            <span class="s2"># initialize tts engine</span>
+            <span class="s1">converter = pyttsx3.init()</span>
+
+            <span class="s2"># set properties given provided options</span>
+            <span class="s1">converter.setProperty(</span><span class="s5">'rate'</span><span class="s0">, </span><span class="s1">voice_options.get(</span><span class="s5">&quot;rate&quot;</span><span class="s0">, </span><span class="s1">self.default_voice_options.get(</span><span class="s5">&quot;rate&quot;</span><span class="s1">)))</span>
+            <span class="s1">converter.setProperty(</span><span class="s5">'volume'</span><span class="s0">, </span><span class="s1">voice_options.get(</span><span class="s5">&quot;volume&quot;</span><span class="s0">, </span><span class="s1">self.default_voice_options.get(</span><span class="s5">&quot;volume&quot;</span><span class="s1">)))</span>
+            <span class="s1">converter.setProperty(</span><span class="s5">'voice'</span><span class="s0">, </span><span class="s1">voice_options.get(</span><span class="s5">&quot;voice&quot;</span><span class="s0">, </span><span class="s1">self.default_voice_options.get(</span><span class="s5">&quot;voice&quot;</span><span class="s1">)))</span>
+
+            <span class="s2"># start gif by sending command event</span>
+            <span class="s1">wx.PostEvent(self.frame</span><span class="s0">, </span><span class="s1">CommandEvent(</span><span class="s5">&quot;gif&quot;</span><span class="s0">, </span><span class="s5">&quot;start&quot;</span><span class="s1">))</span>
+
+            <span class="s2"># say the text</span>
+            <span class="s1">converter.say(text)</span>
+            <span class="s1">converter.runAndWait()</span>
+
+            <span class="s2"># stop the gif by sending the command event</span>
+            <span class="s1">wx.PostEvent(self.frame</span><span class="s0">, </span><span class="s1">CommandEvent(</span><span class="s5">&quot;gif&quot;</span><span class="s0">, </span><span class="s5">&quot;stop&quot;</span><span class="s1">))</span>
+
+        <span class="s2"># run the callback if provided</span>
+        <span class="s0">if </span><span class="s1">callback </span><span class="s0">is not None</span><span class="s1">:</span>
+            <span class="s1">callback()</span>
+
+    <span class="s2"># handles passing incoming user messages to the on_message handler</span>
+    <span class="s0">def </span><span class="s1">call_on_message(self</span><span class="s0">, </span><span class="s1">text: str):</span>
+        <span class="s0">if </span><span class="s1">getattr(self</span><span class="s0">, </span><span class="s5">&quot;on_message&quot;</span><span class="s0">, None</span><span class="s1">) </span><span class="s0">is None</span><span class="s1">:</span>
+            <span class="s1">print(</span><span class="s5">&quot;Please define the 'on_message' function!&quot;</span><span class="s1">)</span>
+            <span class="s0">return</span>
+
+        <span class="s2"># call the on_message handler</span>
+        <span class="s1">getattr(self</span><span class="s0">, </span><span class="s5">&quot;on_message&quot;</span><span class="s1">)(self</span><span class="s0">, </span><span class="s1">text)</span>
+
+    <span class="s2"># used to easily define the on_message handler function</span>
+    <span class="s0">def </span><span class="s1">event(self</span><span class="s0">, </span><span class="s1">coroutine):</span>
+        <span class="s2"># handle general on_connect, and on_disconnect handlers</span>
+        <span class="s0">if </span><span class="s1">coroutine.__name__ == </span><span class="s5">&quot;on_message&quot;</span><span class="s1">:</span>
+            <span class="s2"># replaces the existing coroutine with the provided one</span>
+            <span class="s1">setattr(self</span><span class="s0">, </span><span class="s1">coroutine.__name__</span><span class="s0">, </span><span class="s1">coroutine)</span>
+            <span class="s0">return True</span>
+        <span class="s0">return False</span>
+
+    <span class="s2"># run the chat bot GUI</span>
+    <span class="s0">def </span><span class="s1">run(self) -&gt; </span><span class="s0">None</span><span class="s1">:</span>
+        <span class="s1">self.frame.Show()</span>
+        <span class="s1">self.app.MainLoop()</span>
+</pre>
+</body>
+</html>
